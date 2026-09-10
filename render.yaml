@@ -1,0 +1,16 @@
+services:
+  - type: web
+    name: payment-agentic-ai
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    plan: free
+    envVars:
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: GEMINI_MODEL
+        value: gemini-2.5-flash
+      - key: AGENT_MODE
+        value: production
+      - key: LOG_LEVEL
+        value: INFO
+    healthCheckPath: /api/metrics

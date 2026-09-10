@@ -4,6 +4,8 @@ Exposes endpoints for fetching metrics, execution history, and triggering scenar
 """
 
 import asyncio
+import time
+from collections import defaultdict, deque
 from datetime import datetime, timedelta
 import logging
 import os
@@ -11,10 +13,13 @@ import random
 import sqlite3
 from typing import Dict, Any, Optional
 import uvicorn
-from fastapi import FastAPI, HTTPException
+from dotenv import load_dotenv
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
+
+load_dotenv()  # local dev: pulls GEMINI_API_KEY etc. from .env; no-op if unset (e.g. real env vars in production)
 
 from simulation.generator import PaymentGenerator
 from simulation.routing_config import ROUTING_STATE, reset_routing
@@ -36,10 +41,44 @@ app = FastAPI(title="Payment Routing AI Agent Dashboard")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=True,
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# --- Rate limiting -----------------------------------------------------
+# This dashboard is deployed publicly and /api/run_scenario triggers a real
+# Gemini API call. A simple in-memory per-IP sliding-window limiter keeps a
+# public demo from burning through Gemini quota or being hammered by bots.
+# In-memory is fine here: single-instance deployment, no cross-process state
+# needed for a demo of this scale.
+_RATE_LIMIT_BUCKETS: Dict[str, deque] = defaultdict(deque)
+RATE_LIMITS = {
+    "run_scenario": (8, 60),   # 8 requests per 60s per IP — each one calls Gemini
+    "reset": (10, 60),
+}
+
+def _client_ip(request: Request) -> str:
+    forwarded = request.headers.get("x-forwarded-for")
+    if forwarded:
+        return forwarded.split(",")[0].strip()
+    return request.client.host if request.client else "unknown"
+
+def _enforce_rate_limit(request: Request, bucket_name: str):
+    limit, window_seconds = RATE_LIMITS[bucket_name]
+    key = f"{bucket_name}:{_client_ip(request)}"
+    now = time.monotonic()
+    bucket = _RATE_LIMIT_BUCKETS[key]
+    while bucket and now - bucket[0] > window_seconds:
+        bucket.popleft()
+    if len(bucket) >= limit:
+        retry_after = int(window_seconds - (now - bucket[0])) + 1
+        raise HTTPException(
+            status_code=429,
+            detail=f"Rate limit exceeded ({limit} requests / {window_seconds}s). Try again in ~{retry_after}s — this is a shared public demo.",
+            headers={"Retry-After": str(retry_after)},
+        )
+    bucket.append(now)
 
 # Serve the README screenshots so the in-app Home page can show them directly
 _SCREENSHOTS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "docs", "screenshots")
@@ -114,8 +153,9 @@ async def get_history():
         return []
 
 @app.post("/api/reset")
-async def reset_agent_state():
+async def reset_agent_state(request: Request):
     """Clear memory database and reset the routing overrides."""
+    _enforce_rate_limit(request, "reset")
     reset_routing()
     
     # Clear memories table
@@ -132,7 +172,7 @@ async def reset_agent_state():
     return {"status": "success", "message": "State reset successfully"}
 
 @app.post("/api/run_scenario")
-async def run_scenario(payload: Dict[str, str]):
+async def run_scenario(payload: Dict[str, str], request: Request):
     """
     Executes a single scenario end-to-end:
     1. Resets routing state.
@@ -143,9 +183,10 @@ async def run_scenario(payload: Dict[str, str]):
     6. Triggers post-intervention metrics.
     7. Evaluates learning and returns full report.
     """
+    _enforce_rate_limit(request, "run_scenario")
     scenario = payload.get("scenario", "healthy")
     logger.info(f"Running scenario: {scenario}")
-    
+
     # Reset routing config to fresh defaults
     reset_routing()
     
@@ -757,7 +798,12 @@ INDEX_HTML = """
             const resetState = async () => {
                 setShowResetModal(false);
                 try {
-                    await fetch("/api/reset", { method: "POST" });
+                    const res = await fetch("/api/reset", { method: "POST" });
+                    if (res.status === 429) {
+                        const body = await res.json().catch(() => ({}));
+                        showToast(`⏳ ${body.detail || "Rate limited — try again shortly."}`);
+                        return;
+                    }
                     setLatestRun(null);
                     setActiveScenario("None");
                     fetchMetrics();
@@ -779,6 +825,12 @@ INDEX_HTML = """
                         headers: { "Content-Type": "application/json" },
                         body: JSON.stringify({ scenario: name })
                     });
+                    if (res.status === 429) {
+                        const body = await res.json().catch(() => ({}));
+                        showToast(`⏳ ${body.detail || "Rate limited — this is a shared public demo, try again shortly."}`);
+                        setActiveScenario("None");
+                        return;
+                    }
                     const data = await res.json();
                     setLatestRun(data);
                     fetchMetrics();
@@ -1150,8 +1202,12 @@ async def serve_index():
     return HTMLResponse(content=INDEX_HTML, status_code=200)
 
 def main():
-    logger.info("Starting Dashboard server on http://localhost:8000...")
-    uvicorn.run(app, host="127.0.0.1", port=8000)
+    # Render (and most PaaS hosts) inject PORT and expect a bind on 0.0.0.0.
+    # Locally this still defaults to 127.0.0.1:8000 for the usual dev workflow.
+    port = int(os.environ.get("PORT", 8000))
+    host = "0.0.0.0" if "PORT" in os.environ else "127.0.0.1"
+    logger.info(f"Starting Dashboard server on http://{host}:{port} ...")
+    uvicorn.run(app, host=host, port=port)
 
 if __name__ == "__main__":
     main()
