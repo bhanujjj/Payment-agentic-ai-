@@ -337,8 +337,9 @@ INDEX_HTML = """
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Closed-Loop Payment Agent Dashboard</title>
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 24 24%22><text y=%22.9em%22 font-size=%2222%22>⚡</text></svg>">
     <!-- Fonts -->
-    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
     <!-- Tailwind CSS CDN -->
     <script src="https://cdn.tailwindcss.com"></script>
     <script>
@@ -353,21 +354,34 @@ INDEX_HTML = """
         }
     </script>
     <!-- React and Babel CDNs -->
-    <script src="https://unpkg.com/react@18/umd/react.development.js" crossorigin></script>
-    <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js" crossorigin></script>
-    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
-    <!-- Chart.js CDN -->
-    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/react@18.2.0/umd/react.production.min.js" crossorigin></script>
+    <script src="https://cdn.jsdelivr.net/npm/react-dom@18.2.0/umd/react-dom.production.min.js" crossorigin></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js" crossorigin></script>
     <style>
         body {
-            background-color: #0f172a;
+            background-color: #0b1120;
             color: #f1f5f9;
+            background-image:
+                radial-gradient(circle at 15% 0%, rgba(99, 102, 241, 0.16), transparent 40%),
+                radial-gradient(circle at 85% 8%, rgba(16, 185, 129, 0.12), transparent 38%),
+                radial-gradient(circle at 50% 100%, rgba(147, 51, 234, 0.10), transparent 45%);
+            background-attachment: fixed;
         }
         .glass-card {
-            background: rgba(30, 41, 59, 0.7);
-            backdrop-filter: blur(12px);
+            background: rgba(30, 41, 59, 0.55);
+            backdrop-filter: blur(16px);
             border: 1px solid rgba(255, 255, 255, 0.08);
         }
+        .glass-card:hover { border-color: rgba(255, 255, 255, 0.14); }
+        @keyframes fadeInUp {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        .fade-in-up { animation: fadeInUp 0.45s ease-out both; }
+        ::-webkit-scrollbar { width: 8px; height: 8px; }
+        ::-webkit-scrollbar-track { background: transparent; }
+        ::-webkit-scrollbar-thumb { background: rgba(148,163,184,0.25); border-radius: 8px; }
+        .kpi-value { font-variant-numeric: tabular-nums; }
     </style>
 </head>
 <body>
@@ -376,6 +390,159 @@ INDEX_HTML = """
     <script type="text/babel">
         const { useState, useEffect, useRef } = React;
 
+        const SCENARIOS = [
+            { key: "healthy", label: "Normal Healthy Traffic", desc: "Baseline UPI/card traffic across all 8 gateways — no anomalies.", dot: "bg-emerald-500" },
+            { key: "degradation", label: "ICICI Bank Degradation", desc: "Partial slowdown & elevated failures on a single gateway.", dot: "bg-amber-500" },
+            { key: "outage", label: "HDFC Bank Complete Outage", desc: "Full gateway blackout — agent must suppress the path fast.", dot: "bg-rose-500" },
+            { key: "retry_storm", label: "Severe UPI Retry Storm", desc: "Client-side retries amplify load faster than they resolve it.", dot: "bg-purple-500" },
+            { key: "multiple_issues", label: "Multiple Critical Failures", desc: "Simultaneous outage + degradation stress-tests the reasoner.", dot: "bg-red-400" },
+        ];
+
+        function StatPill({ label, value, accent, suffix }) {
+            return (
+                <div className="glass-card rounded-2xl px-5 py-4 flex-1 min-w-[150px] transition">
+                    <div className="text-[11px] uppercase tracking-wider text-slate-400 font-semibold mb-1">{label}</div>
+                    <div className={`text-2xl font-extrabold kpi-value ${accent}`}>{value}<span className="text-sm font-semibold text-slate-500 ml-0.5">{suffix}</span></div>
+                </div>
+            );
+        }
+
+        function ConfirmModal({ open, title, body, onConfirm, onCancel }) {
+            if (!open) return null;
+            return (
+                <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 backdrop-blur-sm px-4">
+                    <div className="glass-card bg-slate-900/95 rounded-2xl p-6 max-w-sm w-full shadow-2xl fade-in-up">
+                        <h4 className="text-base font-bold text-white mb-2">{title}</h4>
+                        <p className="text-sm text-slate-400 mb-5">{body}</p>
+                        <div className="flex justify-end gap-3">
+                            <button onClick={onCancel} className="px-4 py-2 text-sm font-medium rounded-lg text-slate-300 hover:bg-slate-800 transition">Cancel</button>
+                            <button onClick={onConfirm} className="px-4 py-2 text-sm font-semibold rounded-lg bg-rose-600 hover:bg-rose-500 text-white transition">Reset Everything</button>
+                        </div>
+                    </div>
+                </div>
+            );
+        }
+
+        const PIPELINE_STAGES = [
+            { title: "1. Observe", file: "metrics.py", color: "indigo", desc: "MetricsEngine ingests raw transaction logs and computes success rate, p95 latency, failure rate, and retry-effectiveness signals per gateway." },
+            { title: "2. Reason", file: "reasoner.py", color: "purple", desc: "Gemini-2.5-flash scores multiple root-cause hypotheses (bank outage, degradation, retry storm) with confidence — falls back to deterministic rules if the LLM is unavailable." },
+            { title: "3. Decide", file: "decider.py", color: "sky", desc: "DecisionEngine validates candidate actions against risk guardrails, confidence thresholds, and human-approval constraints, applying a reinforcement multiplier from past outcomes." },
+            { title: "4. Act", file: "executor.py", color: "emerald", desc: "ActionExecutor mutates the live ROUTING_STATE — suppressing gateways, rerouting traffic, or capping retries — closing the loop in real time." },
+            { title: "5. Learn", file: "learner.py", color: "rose", desc: "OutcomeEvaluator classifies SUCCESS/FAILURE from pre/post metrics and persists the experience to SQLite for future reinforcement." },
+        ];
+
+        const COLOR_MAP = {
+            indigo: { bg: "bg-indigo-500/15", border: "border-indigo-500/30", text: "text-indigo-400", dot: "bg-indigo-500" },
+            purple: { bg: "bg-purple-500/15", border: "border-purple-500/30", text: "text-purple-400", dot: "bg-purple-500" },
+            sky: { bg: "bg-sky-500/15", border: "border-sky-500/30", text: "text-sky-400", dot: "bg-sky-500" },
+            emerald: { bg: "bg-emerald-500/15", border: "border-emerald-500/30", text: "text-emerald-400", dot: "bg-emerald-500" },
+            rose: { bg: "bg-rose-500/15", border: "border-rose-500/30", text: "text-rose-400", dot: "bg-rose-500" },
+        };
+
+        function ArchitectureView() {
+            return (
+                <div className="space-y-6 fade-in-up">
+                    <div className="glass-card rounded-2xl p-6 shadow-xl">
+                        <h3 className="text-base font-semibold text-white mb-1">Closed-Loop Architecture</h3>
+                        <p className="text-xs text-slate-400 mb-6">A continuous five-stage Observe → Reason → Decide → Act → Learn loop. Each stage below maps to a real module in this codebase.</p>
+                        <div className="grid grid-cols-1 md:grid-cols-5 gap-3">
+                            {PIPELINE_STAGES.map((s, i) => {
+                                const c = COLOR_MAP[s.color];
+                                return (
+                                    <div key={s.title} className="relative">
+                                        <div className={`glass-card rounded-xl p-4 h-full border ${c.border}`}>
+                                            <div className={`inline-flex items-center gap-1.5 text-xs font-bold uppercase tracking-wide mb-2 ${c.text}`}>
+                                                <span className={`h-1.5 w-1.5 rounded-full ${c.dot}`}></span>{s.title}
+                                            </div>
+                                            <div className="text-[11px] font-mono text-slate-500 mb-2">{s.file}</div>
+                                            <p className="text-xs text-slate-300 leading-relaxed">{s.desc}</p>
+                                        </div>
+                                        {i < PIPELINE_STAGES.length - 1 && (
+                                            <div className="hidden md:flex absolute top-1/2 -right-3 -translate-y-1/2 z-10 text-slate-600 text-lg">→</div>
+                                        )}
+                                    </div>
+                                );
+                            })}
+                        </div>
+                    </div>
+
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                        <div className="glass-card rounded-2xl p-6 shadow-xl">
+                            <h3 className="text-base font-semibold text-white mb-4">Production-Grade Safety Principles</h3>
+                            <ul className="space-y-3 text-sm text-slate-300">
+                                <li className="flex gap-3"><span className="text-emerald-400 font-bold">✓</span><span><b className="text-white">Causality-safe learning</b> — the learner skips reinforcement updates on non-intervention actions (do_nothing / alert_ops) to avoid false credit assignment.</span></li>
+                                <li className="flex gap-3"><span className="text-emerald-400 font-bold">✓</span><span><b className="text-white">Graceful LLM fallback</b> — if Gemini is rate-limited or unavailable, a deterministic rule-based reasoner takes over seamlessly.</span></li>
+                                <li className="flex gap-3"><span className="text-emerald-400 font-bold">✓</span><span><b className="text-white">Risk-gated execution</b> — high-risk actions (e.g. full path suppression) require human approval before the loop closes.</span></li>
+                                <li className="flex gap-3"><span className="text-emerald-400 font-bold">✓</span><span><b className="text-white">State-isolated testing</b> — autouse pytest fixtures reset routing state between tests to prevent cross-contamination.</span></li>
+                            </ul>
+                        </div>
+                        <div className="glass-card rounded-2xl p-6 shadow-xl">
+                            <h3 className="text-base font-semibold text-white mb-4">Tech Stack</h3>
+                            <div className="flex flex-wrap gap-2">
+                                {["FastAPI", "React 18", "TailwindCSS", "SQLite", "Gemini 2.5 Flash", "Pydantic", "pytest", "uvicorn"].map(t => (
+                                    <span key={t} className="text-xs font-medium px-3 py-1.5 rounded-lg bg-slate-800/80 border border-slate-700/60 text-slate-300">{t}</span>
+                                ))}
+                            </div>
+                            <h3 className="text-base font-semibold text-white mt-6 mb-3">Available Actions</h3>
+                            <div className="space-y-2 text-xs text-slate-300">
+                                <div className="flex justify-between bg-slate-900/40 rounded-lg px-3 py-2 border border-slate-800"><span className="font-mono text-indigo-300">recommend_reroute</span><span className="text-slate-500">shift traffic away from a degraded gateway</span></div>
+                                <div className="flex justify-between bg-slate-900/40 rounded-lg px-3 py-2 border border-slate-800"><span className="font-mono text-indigo-300">recommend_path_suppression</span><span className="text-slate-500">fully suppress a pathway during an outage</span></div>
+                                <div className="flex justify-between bg-slate-900/40 rounded-lg px-3 py-2 border border-slate-800"><span className="font-mono text-indigo-300">recommend_retry_adjustment</span><span className="text-slate-500">cap client retries to stop a retry storm</span></div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            );
+        }
+
+        function RecoveryBars({ run }) {
+            const preSuccess = run.pre_metrics.success_rate * 100;
+            const postSuccess = run.post_metrics.success_rate * 100;
+            const preLatency = run.pre_metrics.avg_latency;
+            const postLatency = run.post_metrics.avg_latency;
+            const maxLatency = Math.max(preLatency, postLatency, 1);
+            const [animate, setAnimate] = useState(false);
+            useEffect(() => {
+                setAnimate(false);
+                const t = setTimeout(() => setAnimate(true), 60);
+                return () => clearTimeout(t);
+            }, [run]);
+
+            const Bar = ({ label, value, display, max, colorClass }) => (
+                <div className="flex-1">
+                    <div className="h-40 flex items-end">
+                        <div
+                            className={`w-full rounded-t-lg ${colorClass} transition-all duration-700 ease-out flex items-start justify-center pt-1.5`}
+                            style={{ height: animate ? `${Math.max((value / max) * 100, 4)}%` : "2%" }}
+                        >
+                            <span className="text-xs font-bold text-white drop-shadow">{display}</span>
+                        </div>
+                    </div>
+                    <div className="text-[11px] text-slate-500 text-center mt-2">{label}</div>
+                </div>
+            );
+
+            return (
+                <div className="h-56 flex flex-col">
+                    <div className="flex-1 flex gap-6 px-2">
+                        <div className="flex-1 flex gap-3">
+                            <Bar label="Pre" value={preSuccess} display={`${preSuccess.toFixed(0)}%`} max={100} colorClass="bg-gradient-to-t from-red-600 to-red-400" />
+                            <Bar label="Post" value={postSuccess} display={`${postSuccess.toFixed(0)}%`} max={100} colorClass="bg-gradient-to-t from-emerald-600 to-emerald-400" />
+                        </div>
+                        <div className="w-px bg-slate-800"></div>
+                        <div className="flex-1 flex gap-3">
+                            <Bar label="Pre" value={preLatency} display={`${Math.round(preLatency)}ms`} max={maxLatency} colorClass="bg-gradient-to-t from-red-600 to-red-400" />
+                            <Bar label="Post" value={postLatency} display={`${Math.round(postLatency)}ms`} max={maxLatency} colorClass="bg-gradient-to-t from-emerald-600 to-emerald-400" />
+                        </div>
+                    </div>
+                    <div className="flex justify-around text-xs text-slate-400 font-semibold mt-3 pt-3 border-t border-slate-800/60">
+                        <span>Success Rate</span>
+                        <span>Avg Latency</span>
+                    </div>
+                </div>
+            );
+        }
+
         function App() {
             const [activeTab, setActiveTab] = useState("dashboard");
             const [scenarioRunning, setScenarioRunning] = useState(false);
@@ -383,20 +550,27 @@ INDEX_HTML = """
             const [history, setHistory] = useState([]);
             const [latestRun, setLatestRun] = useState(null);
             const [activeScenario, setActiveScenario] = useState("None");
-            
-            const chartRef = useRef(null);
-            const chartInstanceRef = useRef(null);
+            const [showResetModal, setShowResetModal] = useState(false);
+            const [toast, setToast] = useState(null);
+
+            const showToast = (msg) => {
+                setToast(msg);
+                setTimeout(() => setToast(null), 3000);
+            };
+
+            const totalRuns = history.length;
+            const avgUplift = totalRuns > 0
+                ? (history.reduce((s, m) => s + (m.post_success_rate - m.pre_success_rate), 0) / totalRuns) * 100
+                : 0;
+            const avgScore = totalRuns > 0
+                ? history.reduce((s, m) => s + m.outcome_score, 0) / totalRuns
+                : 0;
+            const successCount = history.filter(m => m.outcome === "SUCCESS").length;
 
             useEffect(() => {
                 fetchMetrics();
                 fetchHistory();
             }, []);
-
-            useEffect(() => {
-                if (latestRun && chartRef.current) {
-                    renderChart();
-                }
-            }, [latestRun]);
 
             const fetchMetrics = async () => {
                 try {
@@ -419,21 +593,24 @@ INDEX_HTML = """
             };
 
             const resetState = async () => {
-                if (!confirm("Are you sure you want to reset memories and clear overrides?")) return;
+                setShowResetModal(false);
                 try {
                     await fetch("/api/reset", { method: "POST" });
                     setLatestRun(null);
                     setActiveScenario("None");
                     fetchMetrics();
                     fetchHistory();
+                    showToast("✓ System state reset — routing overrides cleared, memories wiped.");
                 } catch (e) {
                     console.error("Error resetting state", e);
+                    showToast("✗ Reset failed — see console.");
                 }
             };
 
             const runScenario = async (name) => {
                 setScenarioRunning(true);
                 setActiveScenario(name.toUpperCase());
+                setActiveTab("dashboard");
                 try {
                     const res = await fetch("/api/run_scenario", {
                         method: "POST",
@@ -444,73 +621,33 @@ INDEX_HTML = """
                     setLatestRun(data);
                     fetchMetrics();
                     fetchHistory();
+                    showToast(`✓ Scenario "${name}" resolved in ${data.learning.outcome === 'SUCCESS' ? 'one cycle' : 'partial recovery'} — action: ${data.decision.action.replace('recommend_', '')}`);
                 } catch (e) {
                     console.error("Error running scenario", e);
+                    showToast("✗ Scenario run failed — see console.");
                 } finally {
                     setScenarioRunning(false);
                 }
             };
 
-            const renderChart = () => {
-                if (chartInstanceRef.current) {
-                    chartInstanceRef.current.destroy();
-                }
-
-                const ctx = chartRef.current.getContext("2d");
-                
-                const preSuccess = Math.round(latestRun.pre_metrics.success_rate * 100);
-                const postSuccess = Math.round(latestRun.post_metrics.success_rate * 100);
-                const preLatency = latestRun.pre_metrics.avg_latency;
-                const postLatency = latestRun.post_metrics.avg_latency;
-
-                chartInstanceRef.current = new Chart(ctx, {
-                    type: 'bar',
-                    data: {
-                        labels: ['Success Rate (%)', 'Latency (ms / 10)'],
-                        datasets: [
-                            {
-                                label: 'Pre-Intervention (Outage / Baseline)',
-                                data: [preSuccess, Math.round(preLatency / 10)],
-                                backgroundColor: 'rgba(239, 68, 68, 0.75)',
-                                borderColor: 'rgb(239, 68, 68)',
-                                borderWidth: 1
-                            },
-                            {
-                                label: 'Post-Intervention (Agent Healed)',
-                                data: [postSuccess, Math.round(postLatency / 10)],
-                                backgroundColor: 'rgba(34, 197, 94, 0.75)',
-                                borderColor: 'rgb(34, 197, 94)',
-                                borderWidth: 1
-                            }
-                        ]
-                    },
-                    options: {
-                        responsive: true,
-                        plugins: {
-                            legend: {
-                                labels: { color: '#f1f5f9' }
-                            }
-                        },
-                        scales: {
-                            y: {
-                                beginAtZero: true,
-                                max: 120,
-                                grid: { color: 'rgba(255, 255, 255, 0.05)' },
-                                ticks: { color: '#94a3b8' }
-                            },
-                            x: {
-                                grid: { color: 'rgba(255, 255, 255, 0.05)' },
-                                ticks: { color: '#94a3b8' }
-                            }
-                        }
-                    }
-                });
-            };
-
             return (
                 <div className="min-h-screen flex flex-col font-sans">
+                    <ConfirmModal
+                        open={showResetModal}
+                        title="Reset all agent state?"
+                        body="This clears every SQLite memory record and restores routing config to defaults. This cannot be undone."
+                        onConfirm={resetState}
+                        onCancel={() => setShowResetModal(false)}
+                    />
+
+                    {toast && (
+                        <div className="fixed top-5 right-5 z-[110] glass-card bg-slate-900/95 rounded-xl px-4 py-3 shadow-2xl max-w-sm fade-in-up text-sm text-slate-200 border-l-4 border-l-indigo-500">
+                            {toast}
+                        </div>
+                    )}
+
                     {/* Header */}
-                    <header className="border-b border-slate-800 bg-slate-900/50 backdrop-blur-md px-6 py-4 flex items-center justify-between sticky top-0 z-50">
+                    <header className="border-b border-slate-800 bg-slate-900/60 backdrop-blur-md px-6 py-4 flex flex-wrap items-center justify-between gap-3 sticky top-0 z-50">
                         <div className="flex items-center space-x-3">
                             <div className="h-10 w-10 bg-indigo-600 rounded-xl flex items-center justify-between p-2.5 shadow-lg shadow-indigo-500/20">
                                 <svg xmlns="http://www.w3.org/2000/svg" className="text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
@@ -519,28 +656,44 @@ INDEX_HTML = """
                             </div>
                             <div>
                                 <h1 className="text-xl font-bold tracking-tight text-white flex items-center gap-2">
-                                    Antigravity Closed-Loop AI Agent
+                                    Closed-Loop Payment Routing Agent
                                     <span className="text-xs bg-indigo-500/20 text-indigo-400 font-medium px-2 py-0.5 rounded-full border border-indigo-500/25 uppercase">Autonomous</span>
                                 </h1>
-                                <p className="text-xs text-slate-400">Observe • Diagnose • Execute • Validate • Reinforce</p>
+                                <p className="text-xs text-slate-400">Observe • Diagnose • Decide • Act • Learn — self-healing payment routing, powered by Gemini</p>
                             </div>
                         </div>
-                        <div className="flex items-center space-x-4">
-                            <button onClick={() => setActiveTab("dashboard")} className={`px-4 py-2 text-sm font-medium rounded-lg transition ${activeTab === 'dashboard' ? 'bg-indigo-600 text-white' : 'text-slate-400 hover:text-slate-200'}`}>
+                        <div className="flex items-center space-x-2">
+                            <button onClick={() => setActiveTab("dashboard")} className={`px-4 py-2 text-sm font-medium rounded-lg transition ${activeTab === 'dashboard' ? 'bg-indigo-600 text-white shadow-md shadow-indigo-500/20' : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/60'}`}>
                                 Control Center
                             </button>
-                            <button onClick={() => setActiveTab("history")} className={`px-4 py-2 text-sm font-medium rounded-lg transition ${activeTab === 'history' ? 'bg-indigo-600 text-white' : 'text-slate-400 hover:text-slate-200'}`}>
+                            <button onClick={() => setActiveTab("history")} className={`px-4 py-2 text-sm font-medium rounded-lg transition ${activeTab === 'history' ? 'bg-indigo-600 text-white shadow-md shadow-indigo-500/20' : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/60'}`}>
                                 SQLite Memories
                             </button>
-                            <button onClick={resetState} className="border border-rose-500/30 bg-rose-500/10 text-rose-400 hover:bg-rose-500 hover:text-white px-4 py-2 text-sm font-medium rounded-lg transition">
+                            <button onClick={() => setActiveTab("architecture")} className={`px-4 py-2 text-sm font-medium rounded-lg transition ${activeTab === 'architecture' ? 'bg-indigo-600 text-white shadow-md shadow-indigo-500/20' : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/60'}`}>
+                                Architecture
+                            </button>
+                            <button onClick={() => setShowResetModal(true)} className="border border-rose-500/30 bg-rose-500/10 text-rose-400 hover:bg-rose-500 hover:text-white px-4 py-2 text-sm font-medium rounded-lg transition">
                                 Reset System State
                             </button>
                         </div>
                     </header>
 
+                    {/* KPI strip */}
+                    <div className="px-6 pt-6 max-w-7xl mx-auto w-full">
+                        <div className="flex flex-wrap gap-4">
+                            <StatPill label="Scenario Runs Logged" value={totalRuns} accent="text-white" suffix="" />
+                            <StatPill label="Avg Success-Rate Uplift" value={totalRuns ? `+${avgUplift.toFixed(1)}` : "—"} accent="text-emerald-400" suffix={totalRuns ? "%" : ""} />
+                            <StatPill label="Learning Outcome Score" value={totalRuns ? avgScore.toFixed(2) : "—"} accent="text-indigo-400" suffix="/ 1.00" />
+                            <StatPill label="Interventions Marked Success" value={totalRuns ? `${successCount}/${totalRuns}` : "—"} accent="text-purple-400" suffix="" />
+                            <StatPill label="Active Gateways" value={`${routingState.active_banks.length}`} accent="text-amber-400" suffix="/ 8" />
+                        </div>
+                    </div>
+
                     {/* Main Area */}
                     <main className="flex-1 p-6 max-w-7xl mx-auto w-full">
-                        {activeTab === "dashboard" ? (
+                        {activeTab === "architecture" ? (
+                            <ArchitectureView />
+                        ) : activeTab === "dashboard" ? (
                             <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
                                 {/* Left column: Actions and Environment Health */}
                                 <div className="space-y-6 lg:col-span-1">
@@ -550,27 +703,26 @@ INDEX_HTML = """
                                             Injected Failure Scenarios
                                         </h3>
                                         <p className="text-xs text-slate-400 mb-4">Click to trigger dynamic real-time traffic outages & test the agent loop.</p>
-                                        <div className="space-y-3">
-                                            <button disabled={scenarioRunning} onClick={() => runScenario("healthy")} className="w-full bg-slate-800/80 hover:bg-slate-700/80 text-white py-2.5 px-4 rounded-xl text-sm font-medium flex items-center justify-between border border-slate-700/50 transition">
-                                                <span>Normal Healthy Traffic</span>
-                                                <span className="h-2 w-2 rounded-full bg-emerald-500 shadow-md"></span>
-                                            </button>
-                                            <button disabled={scenarioRunning} onClick={() => runScenario("degradation")} className="w-full bg-slate-800/80 hover:bg-slate-700/80 text-white py-2.5 px-4 rounded-xl text-sm font-medium flex items-center justify-between border border-slate-700/50 transition">
-                                                <span>ICICI Bank Degradation</span>
-                                                <span className="h-2 w-2 rounded-full bg-amber-500 shadow-md"></span>
-                                            </button>
-                                            <button disabled={scenarioRunning} onClick={() => runScenario("outage")} className="w-full bg-slate-800/80 hover:bg-slate-700/80 text-white py-2.5 px-4 rounded-xl text-sm font-medium flex items-center justify-between border border-slate-700/50 transition">
-                                                <span>HDFC Bank Complete Outage</span>
-                                                <span className="h-2 w-2 rounded-full bg-rose-500 shadow-md"></span>
-                                            </button>
-                                            <button disabled={scenarioRunning} onClick={() => runScenario("retry_storm")} className="w-full bg-slate-800/80 hover:bg-slate-700/80 text-white py-2.5 px-4 rounded-xl text-sm font-medium flex items-center justify-between border border-slate-700/50 transition">
-                                                <span>Severe UPI Retry Storm</span>
-                                                <span className="h-2 w-2 rounded-full bg-purple-500 shadow-md"></span>
-                                            </button>
-                                            <button disabled={scenarioRunning} onClick={() => runScenario("multiple_issues")} className="w-full bg-indigo-600/90 hover:bg-indigo-500 text-white py-2.5 px-4 rounded-xl text-sm font-medium flex items-center justify-between shadow-lg shadow-indigo-600/10 transition">
-                                                <span>Multiple Critical Failures</span>
-                                                <span className="h-2 w-2 rounded-full bg-red-400 animate-ping"></span>
-                                            </button>
+                                        <div className="space-y-2.5">
+                                            {SCENARIOS.map(s => {
+                                                const isActive = activeScenario === s.key.toUpperCase();
+                                                return (
+                                                    <button key={s.key} disabled={scenarioRunning} title={s.desc} onClick={() => runScenario(s.key)} className={`w-full py-2.5 px-4 rounded-xl text-sm font-medium flex items-center justify-between border transition disabled:opacity-50 disabled:cursor-not-allowed ${
+                                                        isActive
+                                                        ? "bg-indigo-600 border-indigo-400 text-white shadow-lg shadow-indigo-500/20"
+                                                        : "bg-slate-800/80 hover:bg-slate-700/80 border-slate-700/50 text-slate-300"
+                                                    }`}>
+                                                        <span className="text-left">
+                                                            <span className="block">{s.label}</span>
+                                                            <span className={`block text-[11px] font-normal ${isActive ? "text-indigo-200" : "text-slate-500"}`}>{s.desc}</span>
+                                                        </span>
+                                                        <span className="flex items-center gap-2 shrink-0 pl-3">
+                                                            {isActive && <span className="text-xs text-indigo-200">✓</span>}
+                                                            <span className={`h-2 w-2 rounded-full ${s.dot} shadow-md ${isActive && scenarioRunning ? "animate-ping" : ""}`}></span>
+                                                        </span>
+                                                    </button>
+                                                );
+                                            })}
                                         </div>
                                     </div>
 
@@ -652,9 +804,7 @@ INDEX_HTML = """
                                                     </span>
                                                 </div>
                                                 <div className="grid grid-cols-1 md:grid-cols-2 gap-6 items-center">
-                                                    <div className="h-56">
-                                                        <canvas ref={chartRef}></canvas>
-                                                    </div>
+                                                    <RecoveryBars run={latestRun} />
                                                     <div className="grid grid-cols-2 gap-4">
                                                         <div className="bg-slate-900/50 p-4 rounded-xl border border-slate-800">
                                                             <span className="text-xs text-slate-400 block mb-1">Pre-Success Rate</span>
@@ -798,7 +948,7 @@ INDEX_HTML = """
 
                     {/* Footer */}
                     <footer className="border-t border-slate-800 bg-slate-950 py-4 px-6 text-center text-xs text-slate-500">
-                        Antigravity Advanced Agentic Coding Workspace Platform © 2026. All rights reserved.
+                        Closed-Loop Autonomous Payment Routing Agent — FastAPI + React control dashboard, SQLite-backed reinforcement learning.
                     </footer>
                 </div>
             );
