@@ -14,6 +14,7 @@ import uvicorn
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
+from fastapi.staticfiles import StaticFiles
 
 from simulation.generator import PaymentGenerator
 from simulation.routing_config import ROUTING_STATE, reset_routing
@@ -39,6 +40,11 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Serve the README screenshots so the in-app Home page can show them directly
+_SCREENSHOTS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "docs", "screenshots")
+if os.path.isdir(_SCREENSHOTS_DIR):
+    app.mount("/screenshots", StaticFiles(directory=_SCREENSHOTS_DIR), name="screenshots")
 
 # Shared memory db path resolve
 DB_PATH = "./data/memory/action_memory.db"
@@ -439,6 +445,26 @@ INDEX_HTML = """
             rose: { bg: "bg-rose-500/15", border: "border-rose-500/30", text: "text-rose-400", dot: "bg-rose-500" },
         };
 
+        const STAGE_META = {
+            observe: { n: 1, label: "Observe", color: "indigo", file: "metrics.py" },
+            reason: { n: 2, label: "Reason", color: "purple", file: "reasoner.py" },
+            decide: { n: 3, label: "Decide", color: "sky", file: "decider.py" },
+            act: { n: 4, label: "Act", color: "emerald", file: "executor.py" },
+            learn: { n: 5, label: "Learn", color: "rose", file: "learner.py" },
+        };
+
+        function StageBadge({ stage, size }) {
+            const meta = STAGE_META[stage];
+            const c = COLOR_MAP[meta.color];
+            const sizeClasses = size === "lg" ? "text-xs px-3 py-1.5" : "text-[10px] px-2 py-1";
+            return (
+                <span className={`inline-flex items-center gap-1.5 rounded-full border font-bold uppercase tracking-wider ${sizeClasses} ${c.bg} ${c.border} ${c.text}`} title={`Pipeline stage ${meta.n} of 5 — see ${meta.file}`}>
+                    <span className={`h-1.5 w-1.5 rounded-full ${c.dot}`}></span>
+                    {meta.n}. {meta.label}
+                </span>
+            );
+        }
+
         function ArchitectureView() {
             return (
                 <div className="space-y-6 fade-in-up">
@@ -543,8 +569,144 @@ INDEX_HTML = """
             );
         }
 
+        const STAGE_WALKTHROUGH = [
+            {
+                stage: "observe",
+                headline: "The agent watches every transaction, per gateway, in real time.",
+                body: "MetricsEngine continuously computes success rate, p95 latency, failure rate, and retry-effectiveness for each bank. This is the raw signal the rest of the loop reacts to — nothing downstream runs without this.",
+                img: "/screenshots/stages/observe.png",
+                caption: "Live from the dashboard: a real outage's pre-intervention metrics (30% success, 18.2s latency) next to the post-fix numbers (95% success, 725ms) — both computed by MetricsEngine, not hand-typed.",
+            },
+            {
+                stage: "reason",
+                headline: "Gemini looks at the signals and diagnoses what's actually wrong.",
+                body: "The reasoner scores multiple competing hypotheses — bank outage, partial degradation, retry storm — and returns the most likely one with a confidence score and a plain-English explanation. No API key or over quota? It falls back to deterministic rules automatically, so the loop never stalls.",
+                img: "/screenshots/stages/reason.png",
+                caption: "A real Gemini-2.5-flash response: 85% confidence it's a bank outage, with the specific banks named.",
+            },
+            {
+                stage: "decide",
+                headline: "A decision engine checks the diagnosis against hard safety rules before anything happens.",
+                body: "Confidence thresholds, risk limits, and human-approval gates all get checked here. A reinforcement multiplier — learned from past outcomes of similar incidents — nudges the choice of action. High-risk actions are held for a human instead of firing blind.",
+                img: "/screenshots/stages/decide.png",
+                caption: "The chosen action, its risk level, and why — including when the agent holds for human sign-off instead of auto-executing.",
+            },
+            {
+                stage: "act",
+                headline: "The loop actually closes: live routing config gets mutated, not just recommended.",
+                body: "ActionExecutor writes directly to the routing state — suppressing a dead gateway, rerouting traffic, or capping retries. This is the difference between a chatbot that suggests fixes and an agent that performs them.",
+                img: "/screenshots/stages/act.png",
+                caption: "Real effect of a retry-storm response: retry limits capped from 3 to 2 across every payment method, read live from the simulator's own state.",
+            },
+            {
+                stage: "learn",
+                headline: "Every outcome is scored and written to a real database — so the agent gets better.",
+                body: "OutcomeEvaluator compares pre/post metrics, classifies the result SUCCESS or FAILURE, and persists it to SQLite. Future decisions for similar incidents are weighted by this history. Non-interventions are never credited or blamed — that's the causality-safety guardrail.",
+                img: "/screenshots/stages/learn.png",
+                caption: "A logged outcome: failure rate dropped 65%, and the experience is now queryable in the SQLite Memories tab.",
+            },
+        ];
+
+        const HOME_FEATURES = [
+            { title: "5 injectable failure scenarios", desc: "Healthy traffic, single-bank degradation, full outage, UPI retry storm, or multiple simultaneous failures — one click each." },
+            { title: "Live KPI strip", desc: "Scenario runs, average success-rate uplift, learning outcome score, and active gateway count — all computed from real history, not hardcoded." },
+            { title: "Full SQLite audit trail", desc: "Every intervention the agent makes is queryable: baseline vs. post metrics, outcome score, and evaluation — nothing is a black box." },
+            { title: "Human-in-the-loop guardrail", desc: "High-risk actions are marked PENDING_HUMAN_APPROVAL instead of executing automatically." },
+            { title: "Graceful LLM fallback", desc: "If Gemini is rate-limited or down, a deterministic rule-based reasoner takes over so the loop never stalls." },
+            { title: "Causality-safe learning", desc: "The agent never takes credit or blame for outcomes it didn't cause — do_nothing and alert_ops actions are excluded from reinforcement." },
+        ];
+
+        function HomeView({ onLaunch, onArchitecture }) {
+            return (
+                <div className="space-y-10 fade-in-up">
+                    {/* Hero */}
+                    <div className="glass-card rounded-2xl p-8 md:p-12 shadow-xl text-center">
+                        <span className="inline-block text-xs font-bold uppercase tracking-widest text-indigo-400 bg-indigo-500/10 border border-indigo-500/25 rounded-full px-3 py-1 mb-4">Live, working demo — not a mockup</span>
+                        <h2 className="text-2xl md:text-4xl font-extrabold text-white leading-tight max-w-3xl mx-auto">
+                            An AI agent that watches, diagnoses, and fixes payment routing failures — on its own.
+                        </h2>
+                        <p className="text-sm md:text-base text-slate-400 max-w-2xl mx-auto mt-4">
+                            When a bank gateway degrades or goes down, this agent detects it, asks Gemini to diagnose the root cause, decides on a safe fix, rewrites the live routing config, and remembers whether it worked — every step tagged below so you can see exactly which part of the loop is running.
+                        </p>
+                        <div className="flex flex-wrap items-center justify-center gap-3 mt-7">
+                            <button onClick={onLaunch} className="px-6 py-3 rounded-xl text-sm font-bold bg-indigo-600 hover:bg-indigo-500 text-white shadow-lg shadow-indigo-500/25 transition">
+                                ▶ Launch Live Demo
+                            </button>
+                            <button onClick={onArchitecture} className="px-6 py-3 rounded-xl text-sm font-bold bg-slate-800/80 hover:bg-slate-700/80 border border-slate-700/50 text-slate-200 transition">
+                                View Architecture
+                            </button>
+                        </div>
+                        <div className="flex flex-wrap items-center justify-center gap-2 mt-6">
+                            {["observe", "reason", "decide", "act", "learn"].map(s => <StageBadge key={s} stage={s} size="lg" />)}
+                        </div>
+                    </div>
+
+                    {/* Stage-by-stage walkthrough */}
+                    <div>
+                        <h3 className="text-lg font-bold text-white mb-1 text-center">How the closed loop works — tagged, live, and screenshotted</h3>
+                        <p className="text-xs text-slate-400 text-center max-w-2xl mx-auto mb-8">Every one of these five stages is labeled directly in the live dashboard with the same colored badge you see here — so when you run a scenario, you always know exactly which part of the pipeline you're looking at.</p>
+                        <div className="space-y-6">
+                            {STAGE_WALKTHROUGH.map((s, i) => (
+                                <div key={s.stage} className="glass-card rounded-2xl p-6 shadow-xl grid grid-cols-1 lg:grid-cols-2 gap-6 items-center">
+                                    <div className={i % 2 === 1 ? "lg:order-2" : ""}>
+                                        <StageBadge stage={s.stage} size="lg" />
+                                        <h4 className="text-base font-bold text-white mt-3 mb-2">{s.headline}</h4>
+                                        <p className="text-sm text-slate-400 leading-relaxed">{s.body}</p>
+                                    </div>
+                                    <div className={i % 2 === 1 ? "lg:order-1" : ""}>
+                                        <div className="rounded-xl overflow-hidden border border-slate-800 bg-slate-950">
+                                            <img src={s.img} alt={`${s.stage} stage screenshot`} className="w-full block" loading="lazy" />
+                                        </div>
+                                        <p className="text-[11px] text-slate-500 mt-2 leading-relaxed">{s.caption}</p>
+                                    </div>
+                                </div>
+                            ))}
+                        </div>
+                    </div>
+
+                    {/* Feature grid */}
+                    <div>
+                        <h3 className="text-lg font-bold text-white mb-6 text-center">What's actually in this build</h3>
+                        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                            {HOME_FEATURES.map(f => (
+                                <div key={f.title} className="glass-card rounded-xl p-5">
+                                    <h4 className="text-sm font-bold text-white mb-1.5">{f.title}</h4>
+                                    <p className="text-xs text-slate-400 leading-relaxed">{f.desc}</p>
+                                </div>
+                            ))}
+                        </div>
+                    </div>
+
+                    {/* Full-dashboard previews */}
+                    <div>
+                        <h3 className="text-lg font-bold text-white mb-6 text-center">The full dashboard</h3>
+                        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                            <div className="glass-card rounded-2xl p-4 shadow-xl">
+                                <div className="rounded-xl overflow-hidden border border-slate-800">
+                                    <img src="/screenshots/control_center_outage_recovery.png" alt="Control Center full view" className="w-full block" loading="lazy" />
+                                </div>
+                                <p className="text-xs text-slate-400 mt-3 px-1">Control Center — inject a failure and watch the full loop resolve it in one cycle.</p>
+                            </div>
+                            <div className="glass-card rounded-2xl p-4 shadow-xl">
+                                <div className="rounded-xl overflow-hidden border border-slate-800">
+                                    <img src="/screenshots/sqlite_memories_log.png" alt="SQLite Memories full view" className="w-full block" loading="lazy" />
+                                </div>
+                                <p className="text-xs text-slate-400 mt-3 px-1">SQLite Memories — the full audit trail of every decision the agent has made.</p>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div className="text-center pb-4">
+                        <button onClick={onLaunch} className="px-6 py-3 rounded-xl text-sm font-bold bg-indigo-600 hover:bg-indigo-500 text-white shadow-lg shadow-indigo-500/25 transition">
+                            ▶ Try It Yourself — Launch Live Demo
+                        </button>
+                    </div>
+                </div>
+            );
+        }
+
         function App() {
-            const [activeTab, setActiveTab] = useState("dashboard");
+            const [activeTab, setActiveTab] = useState("home");
             const [scenarioRunning, setScenarioRunning] = useState(false);
             const [routingState, setRoutingState] = useState({ active_banks: [], suppressed_banks: [], retry_limits: {} });
             const [history, setHistory] = useState([]);
@@ -663,6 +825,9 @@ INDEX_HTML = """
                             </div>
                         </div>
                         <div className="flex items-center space-x-2">
+                            <button onClick={() => setActiveTab("home")} className={`px-4 py-2 text-sm font-medium rounded-lg transition ${activeTab === 'home' ? 'bg-indigo-600 text-white shadow-md shadow-indigo-500/20' : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/60'}`}>
+                                Home
+                            </button>
                             <button onClick={() => setActiveTab("dashboard")} className={`px-4 py-2 text-sm font-medium rounded-lg transition ${activeTab === 'dashboard' ? 'bg-indigo-600 text-white shadow-md shadow-indigo-500/20' : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/60'}`}>
                                 Control Center
                             </button>
@@ -679,19 +844,23 @@ INDEX_HTML = """
                     </header>
 
                     {/* KPI strip */}
-                    <div className="px-6 pt-6 max-w-7xl mx-auto w-full">
-                        <div className="flex flex-wrap gap-4">
-                            <StatPill label="Scenario Runs Logged" value={totalRuns} accent="text-white" suffix="" />
-                            <StatPill label="Avg Success-Rate Uplift" value={totalRuns ? `+${avgUplift.toFixed(1)}` : "—"} accent="text-emerald-400" suffix={totalRuns ? "%" : ""} />
-                            <StatPill label="Learning Outcome Score" value={totalRuns ? avgScore.toFixed(2) : "—"} accent="text-indigo-400" suffix="/ 1.00" />
-                            <StatPill label="Interventions Marked Success" value={totalRuns ? `${successCount}/${totalRuns}` : "—"} accent="text-purple-400" suffix="" />
-                            <StatPill label="Active Gateways" value={`${routingState.active_banks.length}`} accent="text-amber-400" suffix="/ 8" />
+                    {activeTab !== "home" && (
+                        <div className="px-6 pt-6 max-w-7xl mx-auto w-full">
+                            <div className="flex flex-wrap gap-4">
+                                <StatPill label="Scenario Runs Logged" value={totalRuns} accent="text-white" suffix="" />
+                                <StatPill label="Avg Success-Rate Uplift" value={totalRuns ? `+${avgUplift.toFixed(1)}` : "—"} accent="text-emerald-400" suffix={totalRuns ? "%" : ""} />
+                                <StatPill label="Learning Outcome Score" value={totalRuns ? avgScore.toFixed(2) : "—"} accent="text-indigo-400" suffix="/ 1.00" />
+                                <StatPill label="Interventions Marked Success" value={totalRuns ? `${successCount}/${totalRuns}` : "—"} accent="text-purple-400" suffix="" />
+                                <StatPill label="Active Gateways" value={`${routingState.active_banks.length}`} accent="text-amber-400" suffix="/ 8" />
+                            </div>
                         </div>
-                    </div>
+                    )}
 
                     {/* Main Area */}
                     <main className="flex-1 p-6 max-w-7xl mx-auto w-full">
-                        {activeTab === "architecture" ? (
+                        {activeTab === "home" ? (
+                            <HomeView onLaunch={() => setActiveTab("dashboard")} onArchitecture={() => setActiveTab("architecture")} />
+                        ) : activeTab === "architecture" ? (
                             <ArchitectureView />
                         ) : activeTab === "dashboard" ? (
                             <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
@@ -728,10 +897,14 @@ INDEX_HTML = """
 
                                     {/* Active Routing config state */}
                                     <div className="glass-card rounded-2xl p-6 shadow-xl">
-                                        <h3 className="text-base font-semibold text-white mb-4 flex items-center gap-2">
-                                            <span className="h-2 w-2 bg-emerald-500 rounded-full"></span>
-                                            Real-Time Routing Map (Simulator Reads)
-                                        </h3>
+                                        <div className="flex items-center justify-between mb-4">
+                                            <h3 className="text-base font-semibold text-white flex items-center gap-2">
+                                                <span className="h-2 w-2 bg-emerald-500 rounded-full"></span>
+                                                Real-Time Routing Map
+                                            </h3>
+                                            <StageBadge stage="act" />
+                                        </div>
+                                        <p className="text-[11px] text-slate-500 -mt-3 mb-4">This is the live config the ActionExecutor actually mutates — what you see here is the real effect of the agent's last action, read straight from the simulator's state.</p>
                                         <div className="space-y-4">
                                             <div>
                                                 <span className="text-xs text-slate-400 block mb-1">Active Gateway Count</span>
@@ -794,9 +967,12 @@ INDEX_HTML = """
                                         <div className="space-y-6">
                                             {/* Baseline Comparison Card */}
                                             <div className="glass-card rounded-2xl p-6 shadow-xl">
-                                                <div className="flex items-center justify-between mb-4">
+                                                <div className="flex items-center justify-between mb-1">
                                                     <div>
-                                                        <h3 className="text-base font-semibold text-white">Baseline vs. Agent-Healed Recovery</h3>
+                                                        <div className="flex items-center gap-2 mb-1">
+                                                            <StageBadge stage="observe" />
+                                                            <h3 className="text-base font-semibold text-white">Baseline vs. Agent-Healed Recovery</h3>
+                                                        </div>
                                                         <p className="text-xs text-slate-400">Performance recovery comparison for scenario: {latestRun.scenario.toUpperCase()}</p>
                                                     </div>
                                                     <span className={`text-xs font-bold px-3 py-1 rounded-full border ${latestRun.learning.outcome === 'SUCCESS' ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20' : 'bg-amber-500/10 text-amber-400 border-amber-500/20'}`}>
@@ -837,7 +1013,10 @@ INDEX_HTML = """
                                             {/* AI Diagnosis and Action Card */}
                                             <div className="glass-card rounded-2xl p-6 shadow-xl space-y-5">
                                                 <div className="border-b border-slate-800/60 pb-4">
-                                                    <h4 className="text-sm font-semibold text-indigo-400 uppercase tracking-wider mb-2">1. AI Root-Cause Diagnosis (Gemini Reasoning)</h4>
+                                                    <div className="flex items-center gap-2 mb-2">
+                                                        <StageBadge stage="reason" />
+                                                        <h4 className="text-sm font-semibold text-indigo-400 uppercase tracking-wider">AI Root-Cause Diagnosis (Gemini Reasoning)</h4>
+                                                    </div>
                                                     <div className="flex items-center gap-3 mb-2">
                                                         <span className="text-xs text-slate-400">Top Hypothesis:</span>
                                                         <span className="text-xs font-bold text-white bg-slate-800 px-2.5 py-0.5 rounded-lg border border-slate-700">
@@ -857,7 +1036,10 @@ INDEX_HTML = """
                                                 </div>
 
                                                 <div className="border-b border-slate-800/60 pb-4">
-                                                    <h4 className="text-sm font-semibold text-emerald-400 uppercase tracking-wider mb-2">2. Decision & Real-Time Config Change (Closed-Loop)</h4>
+                                                    <div className="flex items-center gap-2 mb-2">
+                                                        <StageBadge stage="decide" />
+                                                        <h4 className="text-sm font-semibold text-emerald-400 uppercase tracking-wider">Decision & Real-Time Config Change (Closed-Loop)</h4>
+                                                    </div>
                                                     <div className="flex items-center gap-3 mb-2">
                                                         <span className="text-xs text-slate-400">Executed Action:</span>
                                                         <span className="text-xs font-bold text-white bg-slate-800 px-2.5 py-0.5 rounded-lg border border-slate-700">
@@ -876,7 +1058,10 @@ INDEX_HTML = """
                                                 </div>
 
                                                 <div>
-                                                    <h4 className="text-sm font-semibold text-purple-400 uppercase tracking-wider mb-2">3. Causality-Safe Outcome Evaluation & Memory</h4>
+                                                    <div className="flex items-center gap-2 mb-2">
+                                                        <StageBadge stage="learn" />
+                                                        <h4 className="text-sm font-semibold text-purple-400 uppercase tracking-wider">Causality-Safe Outcome Evaluation & Memory</h4>
+                                                    </div>
                                                     <div className="text-sm text-slate-300 bg-slate-900/40 p-3 rounded-xl border border-slate-800/80 space-y-1">
                                                         <div className="flex justify-between"><span className="text-slate-400">Failure Rate Reduction:</span> <span className="text-emerald-400">-{((latestRun.pre_metrics.failure_rate - latestRun.post_metrics.failure_rate)*100).toFixed(1)}% drop</span></div>
                                                         <div className="flex justify-between"><span className="text-slate-400">Persistence Update:</span> <span className="text-slate-200">{latestRun.learning.saved ? "✓ Stored in SQLite memories database" : "Skipped (Causality safety active on non-intervention)"}</span></div>

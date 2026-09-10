@@ -8,28 +8,45 @@ Built to demonstrate what an AI-native reliability layer for a payments platform
 
 ---
 
-## 🖥️ Live Demo — Control Dashboard
+## 🖥️ Live Demo — Self-Explaining Control Dashboard
 
-The system ships with an interactive **FastAPI + React control dashboard** (single process, zero build step) so the entire closed loop can be triggered and inspected from a browser. Below is the actual dashboard, running locally against the live agent — a real HDFC Bank outage scenario, diagnosed by Gemini, resolved automatically, and its outcome persisted to SQLite:
-
-![Control Center — outage detected, diagnosed, and auto-resolved](docs/screenshots/control_center_outage_recovery.png)
-
-*Top: live KPI strip aggregated from real scenario runs. Left: one-click failure injection. Right: the actual Gemini diagnosis, the decision engine's chosen action and risk level, and the pre/post recovery bars — all from a real request/response cycle, not mocked.*
-
-Every intervention is written to a real SQLite database and surfaced in the **SQLite Memories** tab, so the reinforcement-learning signal is auditable, not a black box:
-
-![SQLite Memories — full audit trail of past agent decisions and outcomes](docs/screenshots/sqlite_memories_log.png)
+The system ships with an interactive **FastAPI + React control dashboard** (single process, zero build step) so the entire closed loop can be triggered and inspected from a browser — and every part of the screen is **tagged with the pipeline stage it belongs to**, so you always know whether you're looking at what the system *observed*, *reasoned*, *decided*, *acted on*, or *learned*.
 
 ```bash
 # Start the FastAPI + React Control Dashboard Server
 python dashboard_server.py
 ```
-Open **[http://localhost:8000/](http://localhost:8000/)** and you get:
+Open **[http://localhost:8000/](http://localhost:8000/)** and you land on a **Home page** that explains the whole product before you touch anything — a live walkthrough of all five stages, each with its own screenshot and colored badge (①Observe ②Reason ③Decide ④Act ⑤Learn), plus a feature grid and one-click links into the live demo.
 
-*   **Control Center** — one-click failure injection (healthy traffic, single-bank degradation, full outage, UPI retry storm, or multiple simultaneous failures), a live KPI strip, the real-time routing map, and a step-by-step breakdown of the agent's diagnosis → decision → execution → learning cycle for the last run.
+Then in the **Control Center**, the same five badges appear directly on the real results of a scenario run — a real HDFC Bank outage, diagnosed by Gemini, resolved automatically, and its outcome persisted to SQLite:
+
+![Control Center — every section tagged with its pipeline stage](docs/screenshots/control_center_outage_recovery.png)
+
+*Every card is labeled: ① OBSERVE (the baseline vs. healed metrics MetricsEngine computed), ② REASON (Gemini's diagnosis and confidence), ③ DECIDE (the decision engine's chosen action, risk level, and rationale), ④ ACT (the live routing config the executor actually mutated), ⑤ LEARN (the outcome score persisted to SQLite). Nothing here is mocked — this is a real request/response cycle.*
+
+Every intervention is written to a real SQLite database and surfaced in the **SQLite Memories** tab, so the reinforcement-learning signal is auditable, not a black box:
+
+![SQLite Memories — full audit trail of past agent decisions and outcomes](docs/screenshots/sqlite_memories_log.png)
+
+What you get, tab by tab:
+
+*   **Home** — a self-explaining landing page: what the product does, a screenshot-illustrated walkthrough of all 5 pipeline stages, a feature grid, and full-dashboard previews.
+*   **Control Center** — one-click failure injection (healthy traffic, single-bank degradation, full outage, UPI retry storm, or multiple simultaneous failures), a live KPI strip, and the stage-tagged breakdown of the agent's diagnosis → decision → execution → learning cycle for the last run.
 *   **SQLite Memories** — the full historical audit log of every intervention the agent has made, queried live from the database, with baseline vs. post-intervention deltas and outcome scores.
 *   **Architecture** — an interactive map of the five-stage pipeline, each stage linked to its real source file, plus the safety guardrails and available routing actions.
 *   Toast notifications and a confirm-before-destroy modal for state resets — this is built to be demoed live, not just curl'd.
+
+### The five stages, tagged and screenshotted individually
+
+| ① Observe | ② Reason | ③ Decide |
+| :---: | :---: | :---: |
+| ![Observe](docs/screenshots/stages/observe.png) | ![Reason](docs/screenshots/stages/reason.png) | ![Decide](docs/screenshots/stages/decide.png) |
+| MetricsEngine's pre/post signal | Gemini's diagnosis + confidence | The decision engine's chosen action |
+
+| ④ Act | ⑤ Learn |
+| :---: | :---: |
+| ![Act](docs/screenshots/stages/act.png) | ![Learn](docs/screenshots/stages/learn.png) |
+| The live routing config actually mutated | Outcome scored and persisted to SQLite |
 
 ---
 
