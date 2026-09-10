@@ -1,10 +1,13 @@
 services:
   - type: web
     name: payment-agentic-ai
-    runtime: docker
-    dockerfilePath: ./Dockerfile
+    runtime: python
     plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: python dashboard_server.py
     envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.2
       - key: GEMINI_API_KEY
         sync: false
       - key: GEMINI_MODEL
